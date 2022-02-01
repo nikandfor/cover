@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/nikandfor/cli"
@@ -13,9 +17,7 @@ import (
 	"github.com/nikandfor/tlog"
 	"github.com/nikandfor/tlog/ext/tlflag"
 	"github.com/nikandfor/tlog/low"
-	"github.com/nikandfor/tlog/tlio"
 	"golang.org/x/mod/modfile"
-	"golang.org/x/term"
 	"golang.org/x/tools/cover"
 )
 
@@ -24,11 +26,14 @@ func main() {
 		Name:   "cover",
 		Args:   cli.Args{},
 		Before: before,
-		Action: run,
+		Action: render,
 		Flags: []*cli.Flag{
 			cli.NewFlag("profile,p", "cover.out", "cover profile"),
 			//	cli.NewFlag("diff,d", "", "compare to profile"),
 			cli.NewFlag("color", false, "colorize output"),
+
+			cli.NewFlag("files", false, "log files summary"),
+			cli.NewFlag("funcs", false, "log funcs summary"),
 
 			cli.NewFlag("log", "stderr", "log output file (or stderr)"),
 			cli.NewFlag("verbosity,v", "", "logger verbosity topics"),
@@ -54,20 +59,7 @@ func before(c *cli.Command) error {
 	return nil
 }
 
-func run(c *cli.Command) (err error) {
-	colorize := false
-
-	fd := tlio.Fd(os.Stdout)
-	if term.IsTerminal(int(fd)) {
-		colorize = true
-	}
-
-	if f := c.Flag("color"); f.IsSet {
-		colorize = c.Bool("color")
-	}
-
-	_ = colorize
-
+func render(c *cli.Command) (err error) {
 	r, rel, err := root(c)
 	if err != nil {
 		return errors.Wrap(err, "find project root")
@@ -78,82 +70,54 @@ func run(c *cli.Command) (err error) {
 		return errors.Wrap(err, "determine module name")
 	}
 
-	//	tlog.Printw("paths", "root", r, "rel", rel, "module", mod)
-
 	ps, err := cover.ParseProfiles(c.String("profile"))
 	if err != nil {
 		return errors.Wrap(err, "parse profile")
 	}
 
-	type stat struct {
-		NumStmt int
-		Covered float64
+	if len(ps) == 0 {
+		fmt.Fprintf(os.Stderr, "no coverage data\n")
+		return
 	}
 
-	stats := map[string]*stat{}
-	dirs := map[string]map[string]struct{}{}
+	type fun struct {
+		Name string
+
+		Decl ast.Decl
+		Pos  int
+		End  int
+
+		Covered int
+		Total   int
+		Norm    float64
+
+		Selected bool
+	}
+
+	type file struct {
+		Name string
+
+		Pos  token.Pos
+		Base int
+		Size int
+
+		Funcs []*fun
+		funcs map[string]*fun
+
+		Covered int
+		Total   int
+		Norm    float64
+
+		Full bool
+
+		src []byte
+	}
+
+	files := map[string]*file{}
+
+	fset := token.NewFileSet()
 
 	for _, p := range ps {
-		total := 0
-		covered := 0.
-
-		for _, b := range p.Blocks {
-			total += b.NumStmt
-			if b.Count != 0 {
-				covered += float64(b.NumStmt)
-			}
-		}
-
-		covered /= float64(total)
-
-		k := p.FileName
-		for {
-			s, ok := stats[k]
-			if !ok {
-				s = &stat{}
-				stats[k] = s
-			}
-
-			s.NumStmt += total
-			s.Covered += covered
-
-			if k == mod {
-				break
-			}
-
-			k = path.Dir(k)
-
-			dir, ok := dirs[k]
-			if !ok {
-				dir = make(map[string]struct{})
-				dirs[k] = dir
-			}
-
-			dir[p.FileName] = struct{}{}
-		}
-	}
-
-	gray := color.New(90)
-	green := color.New(color.Green)
-	red := color.New(color.Red)
-	reset := color.New(color.Reset)
-
-	matcher := func(n string) bool { return true }
-
-	if c.Args.Len() != 0 {
-		matcher = newMatcher(mod, rel, c.Args)
-	}
-
-	for _, p := range ps {
-		if !matcher(p.FileName) {
-			continue
-		}
-
-		fmt.Printf("// %v\n", p.FileName)
-
-		s := stats[p.FileName]
-		fmt.Printf("// coverage %3.1f%%  mode:%v\n", 100*s.Covered, p.Mode)
-
 		rel, err := filepath.Rel(mod, p.FileName)
 		if err != nil {
 			return errors.Wrap(err, "get relative")
@@ -164,54 +128,298 @@ func run(c *cli.Command) (err error) {
 			return errors.Wrap(err, "read source file")
 		}
 
-		bs := p.Boundaries(src)
-
-		if len(bs) == 0 {
-			fmt.Printf("// no data\n")
-			continue
+		fl, err := parser.ParseFile(fset, "", src, 0)
+		if err != nil {
+			return errors.Wrap(err, "parse source file")
 		}
 
-		var buf low.Buf
+		tokFile := fset.File(fl.Pos())
 
-		if bs[0].Offset != 0 {
-			buf = append(buf, gray...)
+		total := 0
+		covered := 0
+
+		for _, b := range p.Blocks {
+			total += b.NumStmt
+			if b.Count != 0 {
+				covered += b.NumStmt
+			}
 		}
 
-		last := 0
+		pkg := path.Dir(p.FileName)
 
-		for i, b := range bs {
-			buf = append(buf, src[last:b.Offset]...)
-			last = b.Offset
+		var funlst []*fun
+		funcs := map[string]*fun{}
 
-			if !b.Start {
-				if i+1 < len(bs) && bs[i+1].Offset == b.Offset {
-					continue
-				}
-
-				buf = append(buf, gray...)
-
+		for _, d := range fl.Decls {
+			f, ok := d.(*ast.FuncDecl)
+			if !ok {
 				continue
 			}
 
-			if b.Norm >= 0.5 {
-				buf = append(buf, green...)
+			total := 0
+			covered := 0
+
+			for _, b := range p.Blocks {
+				off := tokFile.LineStart(b.StartLine) + token.Pos(b.StartCol-1)
+				end := tokFile.LineStart(b.EndLine) + token.Pos(b.EndCol-1)
+
+				if off < f.Pos() || end > f.End() {
+					continue
+				}
+
+				total += b.NumStmt
+				if b.Count != 0 {
+					covered += b.NumStmt
+				}
+			}
+
+			var n string
+
+			if f.Recv != nil {
+				svc := expr(f.Recv.List[0].Type)
+
+				n = pkg + "." + svc + "." + f.Name.Name
 			} else {
-				buf = append(buf, red...)
+				n = pkg + "." + f.Name.Name
+			}
+
+			ff := &fun{
+				Name: n,
+				Decl: d,
+
+				Pos: tokFile.Offset(f.Pos()),
+				End: tokFile.Offset(f.End()),
+
+				Total:   total,
+				Covered: covered,
+			}
+
+			funcs[n] = ff
+			funlst = append(funlst, ff)
+		}
+
+		f := &file{
+			Name:    p.FileName,
+			Pos:     fl.Pos(),
+			Base:    tokFile.Base(),
+			Size:    tokFile.Size(),
+			Funcs:   funlst,
+			funcs:   funcs,
+			src:     src,
+			Total:   total,
+			Covered: covered,
+		}
+
+		files[p.FileName] = f
+
+		k := p.FileName
+
+		for {
+			k = filepath.Dir(k)
+
+			dir, ok := files[k]
+			if !ok {
+				dir = &file{
+					Name: k,
+				}
+				files[k] = dir
+			}
+
+			dir.Covered += f.Covered
+			dir.Total += f.Total
+
+			if filepath.ToSlash(k) == mod {
+				break
 			}
 		}
-
-		if last != len(src) {
-			buf = append(buf, src[last:]...)
-		}
-
-		buf.NewLine()
-
-		buf = append(buf, reset...)
-
-		fmt.Printf("%s", buf)
 	}
 
+	flist := make([]*file, 0, len(files))
+	for _, f := range files {
+		flist = append(flist, f)
+	}
+
+	sort.Slice(flist, func(i, j int) bool {
+		in := flist[i].Name
+		jn := flist[j].Name
+
+		if flist[i].src == nil {
+			in += "/"
+		}
+		if flist[j].src == nil {
+			jn += "/"
+		}
+
+		return in < jn
+	})
+
+	for _, f := range flist {
+		if f.Total != 0 {
+			f.Norm = float64(f.Covered) / float64(f.Total)
+		}
+
+		for _, ff := range f.Funcs {
+			if ff.Total != 0 {
+				ff.Norm = float64(ff.Covered) / float64(ff.Total)
+			}
+		}
+	}
+
+	if c.Bool("files") {
+		for _, f := range flist {
+			tp := "file"
+			if f.src == nil {
+				tp = "folder"
+			}
+
+			tlog.Printw(tp, "coverage", f.Norm, "name", f.Name)
+		}
+	}
+
+	if c.Bool("funcs") {
+		for _, f := range flist {
+			for _, ff := range f.Funcs {
+				tlog.Printw("func", "coverage", ff.Norm, "name", ff.Name)
+			}
+		}
+	}
+
+	for _, a := range c.Args {
+		dots := strings.HasSuffix(a, "...")
+		p := strings.TrimSuffix(a, "...")
+
+		p = path.Join(mod, rel, p)
+
+		tlog.V("match").Printw("pattern", "p", p, "dots", dots)
+
+		for n, f := range files {
+			if f.Full {
+				continue
+			}
+
+			dir := path.Dir(n)
+
+			if n == p || dir == p || dots && strings.HasPrefix(dir, p) {
+				f.Full = true
+				continue
+			}
+
+			if dots || a == "." {
+				continue
+			}
+
+			for _, ff := range f.Funcs {
+				fn := ff.Name
+
+				if ff.Selected {
+					continue
+				}
+
+				if strings.Contains(fn, a) {
+					ff.Selected = true
+				}
+			}
+		}
+	}
+
+	if c.Args.Len() == 0 {
+		for _, f := range files {
+			f.Full = true
+		}
+	}
+
+	var buf low.Buf
+
+	for _, p := range ps {
+		f := files[p.FileName]
+
+		tlog.V("file").Printw("file", "cov", f.Covered, "total", f.Total, "full", f.Full, "file", f.Name)
+
+		if f.Full {
+			buf = low.AppendPrintf(buf, "// %v\n", p.FileName)
+			buf = low.AppendPrintf(buf, "// covered %v (%.1f%%) of %v statements\n", f.Covered, 100*f.Norm, f.Total)
+
+			buf = renderFile(buf, f.src, 0, f.Size, p)
+
+			continue
+		}
+
+		for _, ff := range f.Funcs {
+			tlog.V("func").Printw("func", "cov", ff.Covered, "total", ff.Total, "seld", ff.Selected, "func", ff.Name)
+
+			if ff.Selected {
+				buf = low.AppendPrintf(buf, "// %v\n", ff.Name)
+				buf = low.AppendPrintf(buf, "// covered %v (%.1f%%) of %v statements\n", ff.Covered, 100*ff.Norm, ff.Total)
+
+				buf = renderFile(buf, f.src, ff.Pos, ff.End, p)
+			}
+		}
+	}
+
+	fmt.Printf("%s", buf)
+
 	return nil
+}
+
+func renderFile(buf, src []byte, pos, end int, p *cover.Profile) []byte {
+	gray := color.New(90)
+	green := color.New(color.Green)
+	red := color.New(color.Red)
+	reset := color.New(color.Reset)
+
+	bs := p.Boundaries(src)
+
+	last := pos
+
+	i := 0
+	for i < len(bs) && bs[i].Offset < pos {
+		i++
+	}
+
+	if i < len(bs) && bs[i].Offset != pos {
+		buf = append(buf, gray...)
+	}
+
+	for ; i < len(bs); i++ {
+		b := bs[i]
+
+		if b.Offset >= end {
+			break
+		}
+
+		buf = append(buf, src[last:b.Offset]...)
+		last = b.Offset
+
+		if !b.Start {
+			if i+1 < len(bs) && bs[i+1].Offset == b.Offset {
+				continue
+			}
+
+			buf = append(buf, gray...)
+
+			continue
+		}
+
+		if b.Norm >= 0.5 {
+			buf = append(buf, green...)
+		} else {
+			buf = append(buf, red...)
+		}
+	}
+
+	if last != end {
+		buf = append(buf, src[last:end]...)
+	}
+
+	nl := len(buf) == 0 || buf[len(buf)-1] != '\n'
+
+	buf = append(buf, reset...)
+
+	if nl {
+		buf = append(buf, '\n')
+	}
+
+	return buf
 }
 
 func root(c *cli.Command) (string, string, error) {
@@ -255,62 +463,14 @@ func module(c *cli.Command, r string) (string, error) {
 	return gm.Module.Mod.Path, nil
 }
 
-func newMatcher(mod, rel string, patterns []string) func(string) bool {
-	if len(patterns) == 0 {
-		return func(string) bool { return true }
-	}
-
-	type m struct {
-		Path string
-		Dots bool
-	}
-
-	ms := make([]m, len(patterns))
-
-	for i, p := range patterns {
-		dots := strings.HasSuffix(p, "...")
-
-		if dots {
-			p = strings.TrimSuffix(p, "...")
-		}
-
-		p = path.Join(mod, rel, p)
-
-		p = path.Clean(p)
-
-		tlog.V("match").Printw("pattern", "mod", mod, "rel", rel, "pattern", p)
-
-		ms[i] = m{
-			Path: p,
-			Dots: dots,
-		}
-	}
-
-	return func(n string) (ok bool) {
-		if tlog.If("match") {
-			defer func() {
-				tlog.Printw("match", "ok", ok, "name", n)
-			}()
-		}
-
-		dir := path.Dir(n)
-
-		for _, m := range ms {
-			if m.Dots {
-				if strings.HasPrefix(dir, m.Path) {
-					return true
-				}
-			} else {
-				if dir == m.Path || n == m.Path {
-					return true
-				}
-
-				if ok, _ := path.Match(m.Path, n); ok {
-					return true
-				}
-			}
-		}
-
-		return false
+func expr(e ast.Expr) string {
+	switch e := e.(type) {
+	case *ast.StarExpr:
+		return expr(e.X)
+	case *ast.Ident:
+		return e.Name
+	default:
+		tlog.Printw("eval expr", "expr", e, "type", tlog.FormatNext("%T"), e)
+		panic(e)
 	}
 }
