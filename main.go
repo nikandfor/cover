@@ -23,17 +23,16 @@ import (
 
 func main() {
 	cli.App = cli.Command{
-		Name:   "cover",
-		Args:   cli.Args{},
-		Before: before,
-		Action: render,
+		Name:        "cover",
+		Usage:       "[-p <cover.out>] [file_or_func_to_select ...]",
+		Description: "colors source code by coverage profile",
+		Args:        cli.Args{},
+		Before:      before,
+		Action:      render,
 		Flags: []*cli.Flag{
 			cli.NewFlag("profile,p", "cover.out", "cover profile"),
 			//	cli.NewFlag("diff,d", "", "compare to profile"),
-			cli.NewFlag("color", false, "colorize output"),
-
-			cli.NewFlag("files", false, "log files summary"),
-			cli.NewFlag("funcs", false, "log funcs summary"),
+			//	cli.NewFlag("color", false, "colorize output"),
 
 			cli.NewFlag("log", "stderr", "log output file (or stderr)"),
 			cli.NewFlag("verbosity,v", "", "logger verbosity topics"),
@@ -239,18 +238,28 @@ func render(c *cli.Command) (err error) {
 		flist = append(flist, f)
 	}
 
-	sort.Slice(flist, func(i, j int) bool {
-		in := flist[i].Name
-		jn := flist[j].Name
+	sort.Slice(flist, func(i, j int) (less bool) {
+		li := strings.Split(flist[i].Name, string(rune(os.PathSeparator)))
+		lj := strings.Split(flist[j].Name, string(rune(os.PathSeparator)))
 
-		if flist[i].src == nil {
-			in += "/"
-		}
-		if flist[j].src == nil {
-			jn += "/"
+		//	defer func() {
+		//		tlog.Printw("cmp paths", "less", less, "i", flist[i].Name, "i_dir", flist[i].src == nil, "j", flist[j].Name, "j_dir", flist[j].src == nil)
+		//	}()
+
+		k := 0
+		for k < len(li) && k < len(lj) && li[k] == lj[k] {
+			k++
 		}
 
-		return in < jn
+		if k == len(lj) {
+			return false
+		}
+
+		if k == len(li) {
+			return true
+		}
+
+		return li[k] < lj[k]
 	})
 
 	for _, f := range flist {
@@ -265,7 +274,7 @@ func render(c *cli.Command) (err error) {
 		}
 	}
 
-	if c.Bool("files") {
+	if tlog.If("files") {
 		for _, f := range flist {
 			tp := "file"
 			if f.src == nil {
@@ -276,7 +285,7 @@ func render(c *cli.Command) (err error) {
 		}
 	}
 
-	if c.Bool("funcs") {
+	if tlog.If("funcs") {
 		for _, f := range flist {
 			for _, ff := range f.Funcs {
 				tlog.Printw("func", "coverage", ff.Norm, "name", ff.Name)
