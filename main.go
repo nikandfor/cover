@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/nikandfor/cli"
@@ -18,11 +19,16 @@ import (
 	"github.com/nikandfor/tlog/ext/tlflag"
 	"github.com/nikandfor/tlog/low"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/term"
 	"golang.org/x/tools/cover"
 )
 
+var app *cli.Command
+
 func main() {
-	cli.App = cli.Command{
+	color := term.IsTerminal(int(os.Stdout.Fd()))
+
+	app = &cli.Command{
 		Name:        "cover",
 		Usage:       "[-p <cover.out>] [file_or_func_to_select ...]",
 		Description: "colors source code by coverage profile",
@@ -31,8 +37,12 @@ func main() {
 		Action:      render,
 		Flags: []*cli.Flag{
 			cli.NewFlag("profile,p", "cover.out", "cover profile"),
+
 			//	cli.NewFlag("diff,d", "", "compare to profile"),
-			//	cli.NewFlag("color", false, "colorize output"),
+			cli.NewFlag("color", color, "colorize output"),
+
+			cli.NewFlag("no-file-comment", false, "do not print file name and coverage"),
+			cli.NewFlag("no-func-comment", false, "do not print func name and coverage"),
 
 			cli.NewFlag("log", "stderr", "log output file (or stderr)"),
 			cli.NewFlag("verbosity,v", "", "logger verbosity topics"),
@@ -42,7 +52,7 @@ func main() {
 		},
 	}
 
-	cli.RunAndExit(os.Args)
+	cli.RunAndExit(app, os.Args, os.Environ())
 }
 
 func before(c *cli.Command) error {
@@ -108,6 +118,7 @@ func render(c *cli.Command) (err error) {
 		Norm    float64
 
 		Full bool
+		Some bool
 
 		src []byte
 	}
@@ -294,12 +305,62 @@ func render(c *cli.Command) (err error) {
 	}
 
 	for _, a := range c.Args {
+		a, cov, uncov, err := parseCoverage(a)
+		if err != nil {
+			return errors.Wrap(err, "parse coverage filter")
+		}
+
+		if a == "*" {
+			for _, f := range files {
+				if f.Full {
+					continue
+				}
+
+				if f.Norm <= cov {
+					continue
+				}
+				if f.Norm >= uncov {
+					continue
+				}
+
+				f.Full = true
+			}
+
+			continue
+		}
+
+		if a == "" {
+			for _, f := range files {
+				if f.Full {
+					continue
+				}
+
+				for _, ff := range f.Funcs {
+					if ff.Selected {
+						continue
+					}
+
+					if ff.Norm <= cov {
+						continue
+					}
+					if ff.Norm >= uncov {
+						continue
+					}
+
+					ff.Selected = true
+					f.Some = true
+				}
+			}
+
+			continue
+		}
+
 		dots := strings.HasSuffix(a, "...")
 		p := strings.TrimSuffix(a, "...")
 
 		p = path.Join(mod, rel, p)
 
-		tlog.V("match").Printw("pattern", "p", p, "dots", dots)
+		tlog.V("match,pattern").Printw("pattern", "p", p, "dots", dots)
 
 		for n, f := range files {
 			if f.Full {
@@ -308,8 +369,18 @@ func render(c *cli.Command) (err error) {
 
 			dir := path.Dir(n)
 
+			tlog.V("match").Printw("match file", "n", n, "dir", dir)
+
 			if n == p || dir == p || dots && strings.HasPrefix(dir, p) {
+				if f.Norm <= cov {
+					continue
+				}
+				if f.Norm >= uncov {
+					continue
+				}
+
 				f.Full = true
+
 				continue
 			}
 
@@ -318,14 +389,22 @@ func render(c *cli.Command) (err error) {
 			}
 
 			for _, ff := range f.Funcs {
-				fn := ff.Name
-
 				if ff.Selected {
 					continue
 				}
 
+				fn := ff.Name
+
 				if strings.Contains(fn, a) {
+					if ff.Norm <= cov {
+						continue
+					}
+					if ff.Norm >= uncov {
+						continue
+					}
+
 					ff.Selected = true
+					f.Some = true
 				}
 			}
 		}
@@ -342,26 +421,38 @@ func render(c *cli.Command) (err error) {
 	for _, p := range ps {
 		f := files[p.FileName]
 
-		tlog.V("file").Printw("file", "cov", f.Covered, "total", f.Total, "full", f.Full, "file", f.Name)
+		tlog.V("file").Printw("file", "cov", f.Covered, "total", f.Total, "full", f.Full, "some", f.Some, "file", f.Name)
 
-		if f.Full {
+		if (f.Full || f.Some) && !c.Bool("no-file-comment") {
 			buf = low.AppendPrintf(buf, "// %v\n", p.FileName)
 			buf = low.AppendPrintf(buf, "// covered %v (%.1f%%) of %v statements\n", f.Covered, 100*f.Norm, f.Total)
-
-			buf = renderFile(buf, f.src, 0, f.Size, p)
-
-			continue
 		}
 
+		last := 0
+
 		for _, ff := range f.Funcs {
+			if !f.Full && !ff.Selected {
+				continue
+			}
+
 			tlog.V("func").Printw("func", "cov", ff.Covered, "total", ff.Total, "seld", ff.Selected, "func", ff.Name)
 
-			if ff.Selected {
+			if f.Full && last != ff.Pos {
+				buf = renderFile(buf, f.src, last, ff.Pos, p)
+			}
+
+			if !c.Bool("no-func-comment") {
 				buf = low.AppendPrintf(buf, "// %v\n", ff.Name)
 				buf = low.AppendPrintf(buf, "// covered %v (%.1f%%) of %v statements\n", ff.Covered, 100*ff.Norm, ff.Total)
-
-				buf = renderFile(buf, f.src, ff.Pos, ff.End, p)
 			}
+
+			buf = renderFile(buf, f.src, ff.Pos, ff.End, p)
+
+			last = ff.End
+		}
+
+		if f.Full && last != f.Size {
+			buf = renderFile(buf, f.src, last, f.Size, p)
 		}
 	}
 
@@ -371,10 +462,14 @@ func render(c *cli.Command) (err error) {
 }
 
 func renderFile(buf, src []byte, pos, end int, p *cover.Profile) []byte {
-	gray := color.New(90)
-	green := color.New(color.Green)
-	red := color.New(color.Red)
-	reset := color.New(color.Reset)
+	var gray, green, red, reset []byte
+
+	if app.Bool("color") {
+		gray = color.New(90)
+		green = color.New(color.Green)
+		red = color.New(color.Red)
+		reset = color.New(color.Reset)
+	}
 
 	bs := p.Boundaries(src)
 
@@ -482,4 +577,44 @@ func expr(e ast.Expr) string {
 		tlog.Printw("eval expr", "expr", e, "type", tlog.FormatNext("%T"), e)
 		panic(e)
 	}
+}
+
+func parseCoverage(a string) (_ string, cov, uncov float64, err error) {
+	cov = -1.
+	uncov = 2.
+
+	for {
+		p := strings.LastIndexByte(a, ':')
+		if p == -1 {
+			break
+		}
+
+		if p+2 >= len(a) {
+			err = errors.New("no filter")
+			return
+		}
+
+		var f float64
+		f, err = strconv.ParseFloat(a[p+2:], 64)
+		if err != nil {
+			err = errors.Wrap(err, "percentage")
+			return
+		}
+
+		f /= 100
+
+		switch a[p+1] {
+		case 'g':
+			cov = f
+		case 'l':
+			uncov = f
+		default:
+			err = errors.New("unsupported operation: %q", a[p])
+			return
+		}
+
+		a = a[:p]
+	}
+
+	return a, cov, uncov, nil
 }
