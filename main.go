@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,26 +26,63 @@ import (
 
 var app *cli.Command
 
+var help = `file_or_func_filter is either file or func filter.
+
+Filter started with ! unselects previously matched.
+
+	pkg !pkg.Type
+
+File filter is a glob. 'path/...' is also supported. All paths are relative.
+
+	wire/...
+	version.go
+
+Func filter matches package (not subpackages), type or func.
+
+	pkg
+	path/to/pkg
+	pkg.Type
+	pkg.Func
+	Type
+	Func
+	Func.func1
+
+cov_filter is applied to funcs if file_or_func_filter matched.
+if file_or_func_filter contains '...' cov_filter is checked against files, not funcs in file.
+cov_filter is :<g|l|a|b><percent>
+
+	version.go:g10  - all functions from version.go with coverage greater then 10%
+	pkg.Func:l30    - Func function if its coverage is less than 30%
+	./api/...:b50   - all files in the api folder with coverage below 50%
+	Type:a10:b90    - Type functions with coverage above 10 and below 90 percent
+	:b33.333        - All functions with coverate below 1/3
+	...:a66.66      - All files with coverate above 2/3
+`
+
 func main() {
 	color := term.IsTerminal(int(os.Stdout.Fd()))
 
 	app = &cli.Command{
 		Name:        "cover",
-		Usage:       "[-p <cover.out>] [file_or_func_to_select ...]",
-		Description: "colors source code by coverage profile",
-		Args:        cli.Args{},
-		Before:      before,
-		Action:      render,
+		Usage:       "[-p <cover.out>] [[!]file_or_func_filter[cov_filter ...] ...]",
+		Description: "render coverage profile with colors and filters",
+		Help:        help,
+
+		Args:   cli.Args{},
+		Before: before,
+		Action: render,
 		Flags: []*cli.Flag{
-			cli.NewFlag("profile,p", "cover.out", "cover profile"),
+			cli.NewFlag("profile,coverprofile,p", "cover.out", "cover profile"),
 
 			//	cli.NewFlag("diff,d", "", "compare to profile"),
 			cli.NewFlag("color", color, "colorize output"),
+			cli.NewFlag("exit-code", false, "set exit code to 1 if something selected"),
+			cli.NewFlag("silent", false, "do not print the code, useful with --exit-code"),
 
 			cli.NewFlag("no-file-comment", false, "do not print file name and coverage"),
 			cli.NewFlag("no-func-comment", false, "do not print func name and coverage"),
 
-			cli.NewFlag("log", "stderr", "log output file (or stderr)"),
+			cli.NewFlag("log", "stderr", "log output file"),
 			cli.NewFlag("verbosity,v", "", "logger verbosity topics"),
 
 			cli.FlagfileFlag,
@@ -117,7 +155,6 @@ func render(c *cli.Command) (err error) {
 		Total   int
 		Norm    float64
 
-		Full bool
 		Some bool
 
 		src []byte
@@ -286,14 +323,21 @@ func render(c *cli.Command) (err error) {
 	}
 
 	if tlog.If("files") {
+		cov, tot := 0, 0
+
 		for _, f := range flist {
 			tp := "file"
 			if f.src == nil {
-				tp = "folder"
+				tp = "dir"
 			}
 
 			tlog.Printw(tp, "coverage", f.Norm, "name", f.Name)
+
+			cov += f.Covered
+			tot += f.Total
 		}
+
+		tlog.Printw("total", "coverage", float64(cov)/float64(tot))
 	}
 
 	if tlog.If("funcs") {
@@ -305,25 +349,32 @@ func render(c *cli.Command) (err error) {
 	}
 
 	for _, a := range c.Args {
-		a, cov, uncov, err := parseCoverage(a)
+		set := true
+
+		if strings.HasPrefix(a, "!") {
+			set = false
+			a = a[1:]
+		}
+
+		a, top, bot, err := parseCoverage(a)
 		if err != nil {
 			return errors.Wrap(err, "parse coverage filter")
 		}
 
-		if a == "*" {
+		tlog.V("cov").Printw("coverage", "top", top, "bottom", bot, "a", a)
+
+		if a == "..." {
 			for _, f := range files {
-				if f.Full {
+				if f.Norm <= bot {
+					continue
+				}
+				if f.Norm >= top {
 					continue
 				}
 
-				if f.Norm <= cov {
-					continue
+				for _, ff := range f.Funcs {
+					ff.Selected = set
 				}
-				if f.Norm >= uncov {
-					continue
-				}
-
-				f.Full = true
 			}
 
 			continue
@@ -331,55 +382,73 @@ func render(c *cli.Command) (err error) {
 
 		if a == "" {
 			for _, f := range files {
-				if f.Full {
-					continue
-				}
-
 				for _, ff := range f.Funcs {
-					if ff.Selected {
+					if ff.Norm <= bot {
+						continue
+					}
+					if ff.Norm >= top {
 						continue
 					}
 
-					if ff.Norm <= cov {
-						continue
-					}
-					if ff.Norm >= uncov {
-						continue
-					}
-
-					ff.Selected = true
-					f.Some = true
+					ff.Selected = set
 				}
 			}
 
 			continue
 		}
 
-		dots := strings.HasSuffix(a, "...")
+		dots := strings.HasSuffix(a, "/...")
 		p := strings.TrimSuffix(a, "...")
 
 		p = path.Join(mod, rel, p)
 
-		tlog.V("match,pattern").Printw("pattern", "p", p, "dots", dots)
+		for _, f := range flist {
+			n := f.Name
 
-		for n, f := range files {
-			if f.Full {
-				continue
+			//	ok := n == p || dir == p || dots && strings.HasPrefix(dir, p)
+
+			dir := filepath.Dir(n)
+
+			ok, err := filepath.Match(p, n)
+			if err != nil {
+				return fmt.Errorf("match file %q: %w", p, err)
 			}
 
-			dir := path.Dir(n)
-
-			tlog.V("match").Printw("match file", "n", n, "dir", dir)
-
-			if n == p || dir == p || dots && strings.HasPrefix(dir, p) {
-				if f.Norm <= cov {
-					continue
+			if !ok {
+				ok, err = filepath.Match(p, dir)
+				if err != nil {
+					return fmt.Errorf("match dir %q: %w", p, err)
 				}
-				if f.Norm >= uncov {
-					continue
+			}
+
+			for q := n; dots && !ok && q != "."; q = filepath.Dir(q) {
+				ok = p == q
+			}
+
+			tlog.V("match_file").Printw("match file", "match", ok, "set", set, "p", p, "file", n)
+
+			if ok {
+				if dots {
+					if f.Norm <= bot {
+						continue
+					}
+					if f.Norm >= top {
+						continue
+					}
 				}
 
-				f.Full = true
+				for _, ff := range f.Funcs {
+					if !dots {
+						if ff.Norm <= bot {
+							continue
+						}
+						if ff.Norm >= top {
+							continue
+						}
+					}
+
+					ff.Selected = set
+				}
 
 				continue
 			}
@@ -389,22 +458,26 @@ func render(c *cli.Command) (err error) {
 			}
 
 			for _, ff := range f.Funcs {
-				if ff.Selected {
-					continue
-				}
-
 				fn := ff.Name
 
-				if strings.Contains(fn, a) {
-					if ff.Norm <= cov {
+				// ok :=  strings.Contains(fn, a)
+
+				ok, err := matchType(a, fn)
+				if err != nil {
+					return fmt.Errorf("match type %q: %w", p, err)
+				}
+
+				tlog.V("match_type,match_func").Printw("match func", "match", ok, "set", set, "p", a, "func", fn)
+
+				if ok {
+					if ff.Norm <= bot {
 						continue
 					}
-					if ff.Norm >= uncov {
+					if ff.Norm >= top {
 						continue
 					}
 
-					ff.Selected = true
-					f.Some = true
+					ff.Selected = set
 				}
 			}
 		}
@@ -412,7 +485,21 @@ func render(c *cli.Command) (err error) {
 
 	if c.Args.Len() == 0 {
 		for _, f := range files {
-			f.Full = true
+			for _, ff := range f.Funcs {
+				ff.Selected = true
+			}
+		}
+	}
+
+	for _, f := range flist {
+		for _, ff := range f.Funcs {
+			if !ff.Selected {
+				continue
+			}
+
+			f.Some = true
+
+			break
 		}
 	}
 
@@ -421,23 +508,33 @@ func render(c *cli.Command) (err error) {
 	for _, p := range ps {
 		f := files[p.FileName]
 
-		tlog.V("file").Printw("file", "cov", f.Covered, "total", f.Total, "full", f.Full, "some", f.Some, "file", f.Name)
+		tlog.V("file").Printw("file", "show", f.Some, "norm", f.Norm, "cov", f.Covered, "total", f.Total, "file", f.Name)
 
-		if (f.Full || f.Some) && !c.Bool("no-file-comment") {
+		if !f.Some {
+			continue
+		}
+
+		if !c.Bool("no-file-comment") {
 			buf = low.AppendPrintf(buf, "// %v\n", p.FileName)
 			buf = low.AppendPrintf(buf, "// covered %v (%.1f%%) of %v statements\n", f.Covered, 100*f.Norm, f.Total)
 		}
 
 		last := 0
 
+		if len(f.Funcs) != 0 && last != f.Funcs[0].Pos {
+			last = f.Funcs[0].Pos
+			buf = renderFile(buf, f.src, 0, last, p)
+		}
+
 		for _, ff := range f.Funcs {
-			if !f.Full && !ff.Selected {
+			tlog.V("func").Printw("func", "show", ff.Selected, "norm", ff.Norm, "cov", ff.Covered, "total", ff.Total, "func", ff.Name)
+
+			if !ff.Selected {
+				last = ff.End
 				continue
 			}
 
-			tlog.V("func").Printw("func", "cov", ff.Covered, "total", ff.Total, "seld", ff.Selected, "func", ff.Name)
-
-			if f.Full && last != ff.Pos {
+			if last != ff.Pos {
 				buf = renderFile(buf, f.src, last, ff.Pos, p)
 			}
 
@@ -451,12 +548,18 @@ func render(c *cli.Command) (err error) {
 			last = ff.End
 		}
 
-		if f.Full && last != f.Size {
+		if last != f.Size {
 			buf = renderFile(buf, f.src, last, f.Size, p)
 		}
 	}
 
-	fmt.Printf("%s", buf)
+	if !c.Bool("silent") {
+		fmt.Fprintf(c, "%s", buf)
+	}
+
+	if c.Bool("exit-code") && len(buf) != 0 {
+		os.Exit(1)
+	}
 
 	return nil
 }
@@ -579,12 +682,14 @@ func expr(e ast.Expr) string {
 	}
 }
 
-func parseCoverage(a string) (_ string, cov, uncov float64, err error) {
-	cov = -1.
-	uncov = 2.
+func parseCoverage(a string) (_ string, top, bot float64, err error) {
+	top = 2.
+	bot = -1.
+
+	end := len(a)
 
 	for {
-		p := strings.LastIndexByte(a, ':')
+		p := strings.LastIndexByte(a[:end], ':')
 		if p == -1 {
 			break
 		}
@@ -604,17 +709,28 @@ func parseCoverage(a string) (_ string, cov, uncov float64, err error) {
 		f /= 100
 
 		switch a[p+1] {
-		case 'g':
-			cov = f
-		case 'l':
-			uncov = f
+		case 'l', 'b':
+			top = f
+		case 'g', 'a':
+			bot = f
 		default:
 			err = errors.New("unsupported operation: %q", a[p])
 			return
 		}
 
-		a = a[:p]
+		end = p
 	}
 
-	return a, cov, uncov, nil
+	return a[:end], top, bot, nil
+}
+
+func matchType(pattern, fn string) (ok bool, err error) {
+	re, err := regexp.Compile(`([/\.]|^)` + pattern + `(\.|$)`)
+	if err != nil {
+		return false, err
+	}
+
+	ok = re.MatchString(fn)
+
+	return ok, nil
 }
