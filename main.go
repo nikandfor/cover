@@ -79,6 +79,7 @@ func main() {
 			cli.NewFlag("exit-code", false, "set exit code to 1 if something selected"),
 			cli.NewFlag("silent", false, "do not print the code, useful with --exit-code"),
 
+			cli.NewFlag("funcs-only,func-only", false, "do not render non function declarations (vars, types, ...)"),
 			cli.NewFlag("no-file-comment", false, "do not print file name and coverage"),
 			cli.NewFlag("no-func-comment", false, "do not print func name and coverage"),
 
@@ -521,7 +522,7 @@ func render(c *cli.Command) (err error) {
 
 		last := 0
 
-		if len(f.Funcs) != 0 && last != f.Funcs[0].Pos {
+		if !c.Bool("funcs-only") && len(f.Funcs) != 0 && last != f.Funcs[0].Pos {
 			last = f.Funcs[0].Pos
 			buf = renderFile(buf, f.src, 0, last, p)
 		}
@@ -534,7 +535,7 @@ func render(c *cli.Command) (err error) {
 				continue
 			}
 
-			if last != ff.Pos {
+			if !c.Bool("funcs-only") && last != ff.Pos {
 				buf = renderFile(buf, f.src, last, ff.Pos, p)
 			}
 
@@ -548,7 +549,7 @@ func render(c *cli.Command) (err error) {
 			last = ff.End
 		}
 
-		if last != f.Size {
+		if !c.Bool("funcs-only") && last != f.Size {
 			buf = renderFile(buf, f.src, last, f.Size, p)
 		}
 	}
