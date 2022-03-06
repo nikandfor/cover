@@ -3,6 +3,7 @@ module github.com/nikandfor/cover
 go 1.17
 
 require (
+	github.com/nikandfor/assert v0.0.0-20220304193615-0dc830fd5c42
 	github.com/nikandfor/cli v0.0.0-20220304193817-d501836a0b4c
 	github.com/nikandfor/errors v0.5.1-0.20220304154616-1df269730b0b
 	github.com/nikandfor/escape v0.0.0-20211015113450-0e8be7818ccf

@@ -28,35 +28,35 @@ var app *cli.Command
 
 var help = `file_or_func_filter is either file or func filter.
 
-Filter started with ! unselects previously matched.
+Filter started with ! unselects previously selected.
 
-	pkg !pkg.Type
+    pkg !pkg.Type
 
 File filter is a glob. 'path/...' is also supported. All paths are relative.
 
-	wire/...
-	version.go
+    wire/...
+    version.go
 
 Func filter matches package (not subpackages), type or func.
 
-	pkg
-	path/to/pkg
-	pkg.Type
-	pkg.Func
-	Type
-	Func
-	Func.func1
+    pkg
+    path/to/pkg
+    pkg.Type
+    pkg.Func
+    Type
+    Func
+    Func.func1
 
 cov_filter is applied to funcs if file_or_func_filter matched.
 if file_or_func_filter contains '...' cov_filter is checked against files, not funcs in file.
 cov_filter is :<g|l|a|b><percent>
 
-	version.go:g10  - all functions from version.go with coverage greater then 10%
-	pkg.Func:l30    - Func function if its coverage is less than 30%
-	./api/...:b50   - all files in the api folder with coverage below 50%
-	Type:a10:b90    - Type functions with coverage above 10 and below 90 percent
-	:b33.333        - All functions with coverate below 1/3
-	...:a66.66      - All files with coverate above 2/3
+    version.go:g10  - all functions from version.go with coverage greater then 10%
+    pkg.Func:l30    - Func function if its coverage is less than 30%
+    ./api/...:b50   - all files in the api folder with coverage below 50%
+    Type:a10:b90    - Type functions with coverage above 10 and below 90 percent
+    :b33.333        - All functions with coverate below 1/3
+    ...:a66.66      - All files with coverate above 2/3
 `
 
 func main() {
@@ -64,13 +64,16 @@ func main() {
 
 	app = &cli.Command{
 		Name:        "cover",
-		Usage:       "[-p <cover.out>] [[!]file_or_func_filter[cov_filter ...] ...]",
+		Usage:       "[-p <cover.out>] [[!]file_or_func_filter[cov_filter...] ...]",
 		Description: "render coverage profile with colors and filters",
 		Help:        help,
 
 		Args:   cli.Args{},
 		Before: before,
 		Action: render,
+
+		EnvPrefix: "COVER_",
+
 		Flags: []*cli.Flag{
 			cli.NewFlag("profile,coverprofile,p", "cover.out", "cover profile"),
 
@@ -349,6 +352,10 @@ func render(c *cli.Command) (err error) {
 		}
 	}
 
+	if c.Args.Len() == 0 {
+		c.Args = append(c.Args, "./...")
+	}
+
 	for _, a := range c.Args {
 		set := true
 
@@ -364,44 +371,10 @@ func render(c *cli.Command) (err error) {
 
 		tlog.V("cov").Printw("coverage", "top", top, "bottom", bot, "a", a)
 
-		if a == "..." {
-			for _, f := range files {
-				if f.Norm <= bot {
-					continue
-				}
-				if f.Norm >= top {
-					continue
-				}
-
-				for _, ff := range f.Funcs {
-					ff.Selected = set
-				}
-			}
-
-			continue
-		}
-
-		if a == "" {
-			for _, f := range files {
-				for _, ff := range f.Funcs {
-					if ff.Norm <= bot {
-						continue
-					}
-					if ff.Norm >= top {
-						continue
-					}
-
-					ff.Selected = set
-				}
-			}
-
-			continue
-		}
-
-		dots := strings.HasSuffix(a, "/...")
+		dots := strings.HasSuffix(a, "...")
 		p := strings.TrimSuffix(a, "...")
 
-		p = path.Join(mod, rel, p)
+		p = filepath.Join(mod, rel, p)
 
 		for _, f := range flist {
 			n := f.Name
@@ -422,7 +395,7 @@ func render(c *cli.Command) (err error) {
 				}
 			}
 
-			for q := n; dots && !ok && q != "."; q = filepath.Dir(q) {
+			for q := n; (dots || a == "") && !ok && q != "."; q = filepath.Dir(q) {
 				ok = p == q
 			}
 
@@ -480,14 +453,6 @@ func render(c *cli.Command) (err error) {
 
 					ff.Selected = set
 				}
-			}
-		}
-	}
-
-	if c.Args.Len() == 0 {
-		for _, f := range files {
-			for _, ff := range f.Funcs {
-				ff.Selected = true
 			}
 		}
 	}
@@ -701,7 +666,7 @@ func parseCoverage(a string) (_ string, top, bot float64, err error) {
 		}
 
 		var f float64
-		f, err = strconv.ParseFloat(a[p+2:], 64)
+		f, err = strconv.ParseFloat(a[p+2:end], 64)
 		if err != nil {
 			err = errors.Wrap(err, "percentage")
 			return
@@ -726,7 +691,7 @@ func parseCoverage(a string) (_ string, top, bot float64, err error) {
 }
 
 func matchType(pattern, fn string) (ok bool, err error) {
-	re, err := regexp.Compile(`([/\.]|^)` + pattern + `(\.|$)`)
+	re, err := regexp.Compile(`\b` + pattern + `\b(\.|$)`)
 	if err != nil {
 		return false, err
 	}
