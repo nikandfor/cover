@@ -560,27 +560,36 @@ func renderFile(buf, src []byte, pos, end int, p *cover.Profile) []byte {
 			break
 		}
 
-		buf = append(buf, src[last:b.Offset]...)
-		last = b.Offset
-
-		if !b.Start {
-			if i+1 < len(bs) && bs[i+1].Offset == b.Offset {
-				continue
+		if last != b.Offset {
+			if tlog.If("boundaries") {
+				buf = low.AppendPrintf(buf, "|%d|", b.Offset-last)
 			}
 
-			buf = append(buf, gray...)
+			buf = append(buf, src[last:b.Offset]...)
+			last = b.Offset
+		}
+
+		if b.Start {
+			if b.Norm >= 0.5 {
+				buf = append(buf, green...)
+			} else {
+				buf = append(buf, red...)
+			}
 
 			continue
 		}
 
-		if b.Norm >= 0.5 {
-			buf = append(buf, green...)
-		} else {
-			buf = append(buf, red...)
+		if i+1 < len(bs) && bs[i+1].Offset == b.Offset {
+			continue
 		}
+
+		buf = append(buf, gray...)
 	}
 
 	if last != end {
+		if tlog.If("boundaries") {
+			buf = low.AppendPrintf(buf, "|%d|", end-last)
+		}
 		buf = append(buf, src[last:end]...)
 	}
 
