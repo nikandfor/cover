@@ -86,6 +86,8 @@ func main() {
 			cli.NewFlag("no-file-comment", false, "do not print file name and coverage"),
 			cli.NewFlag("no-func-comment", false, "do not print func name and coverage"),
 
+			cli.NewFlag("empty-coverage", 1., "coverage if there are 0 statements total"),
+
 			cli.NewFlag("log", "stderr", "log output file"),
 			cli.NewFlag("verbosity,v", "", "logger verbosity topics"),
 
@@ -317,11 +319,15 @@ func render(c *cli.Command) (err error) {
 	for _, f := range flist {
 		if f.Total != 0 {
 			f.Norm = float64(f.Covered) / float64(f.Total)
+		} else {
+			f.Norm = c.Float64("empty-coverage")
 		}
 
 		for _, ff := range f.Funcs {
 			if ff.Total != 0 {
 				ff.Norm = float64(ff.Covered) / float64(ff.Total)
+			} else {
+				ff.Norm = c.Float64("empty-coverage")
 			}
 		}
 	}
