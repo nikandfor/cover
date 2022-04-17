@@ -62,6 +62,11 @@ cov_filter is :<g|l|a|b><percent>
 func main() {
 	color := term.IsTerminal(int(os.Stdout.Fd()))
 
+	mode := "color"
+	if !color {
+		mode = "prefix"
+	}
+
 	app = &cli.Command{
 		Name:        "cover",
 		Usage:       "[-p <cover.out>] [[!]file_or_func_filter[cov_filter...] ...]",
@@ -78,9 +83,8 @@ func main() {
 			cli.NewFlag("profile,coverprofile,p", "cover.out", "cover profile"),
 
 			//	cli.NewFlag("diff,d", "", "compare to profile"),
-			cli.NewFlag("color", color, "colorize output"),
+			cli.NewFlag("mode", mode, "color|silent|none"),
 			cli.NewFlag("exit-code", false, "set exit code to 1 if something selected"),
-			cli.NewFlag("silent", false, "do not print the code, useful with --exit-code"),
 
 			cli.NewFlag("funcs-only,func-only", false, "do not render non function declarations (vars, types, ...)"),
 			cli.NewFlag("no-file-comment", false, "do not print file name and coverage"),
@@ -525,7 +529,7 @@ func render(c *cli.Command) (err error) {
 		}
 	}
 
-	if !c.Bool("silent") {
+	if c.String("mode") != "silent" {
 		fmt.Fprintf(c, "%s", buf)
 	}
 
@@ -537,13 +541,25 @@ func render(c *cli.Command) (err error) {
 }
 
 func renderFile(buf, src []byte, pos, end int, p *cover.Profile) []byte {
-	var gray, green, red, reset []byte
+	w := PrefWriter{
+		b: buf,
+	}
 
-	if app.Bool("color") {
-		gray = color.New(90)
-		green = color.New(color.Green)
-		red = color.New(color.Red)
-		reset = color.New(color.Reset)
+	switch app.String("mode") {
+	case "color":
+		w.color = [][]byte{
+			Reset: color.New(color.Reset),
+			Gray:  color.New(90),
+			Green: color.New(color.Green),
+			Red:   color.New(color.Red),
+		}
+	case "prefix":
+		w.pref = [][]byte{
+			Reset: []byte(" "),
+			Gray:  []byte(" "),
+			Green: []byte("+"),
+			Red:   []byte("-"),
+		}
 	}
 
 	bs := p.Boundaries(src)
@@ -555,9 +571,7 @@ func renderFile(buf, src []byte, pos, end int, p *cover.Profile) []byte {
 		i++
 	}
 
-	if i < len(bs) && bs[i].Offset != pos {
-		buf = append(buf, gray...)
-	}
+	w.mode = Gray
 
 	for ; i < len(bs); i++ {
 		b := bs[i]
@@ -567,47 +581,37 @@ func renderFile(buf, src []byte, pos, end int, p *cover.Profile) []byte {
 		}
 
 		if last != b.Offset {
-			if tlog.If("boundaries") {
-				buf = low.AppendPrintf(buf, "|%d|", b.Offset-last)
-			}
+			w.Write(src[last:b.Offset])
 
-			buf = append(buf, src[last:b.Offset]...)
 			last = b.Offset
 		}
 
-		if b.Start {
-			if b.Norm >= 0.5 {
-				buf = append(buf, green...)
-			} else {
-				buf = append(buf, red...)
-			}
+		if !b.Start {
+			w.mode = Gray
 
 			continue
 		}
 
-		if i+1 < len(bs) && bs[i+1].Offset == b.Offset {
-			continue
+		if b.Norm >= 0.5 {
+			w.mode = Green
+		} else {
+			w.mode = Red
 		}
-
-		buf = append(buf, gray...)
 	}
 
 	if last != end {
-		if tlog.If("boundaries") {
-			buf = low.AppendPrintf(buf, "|%d|", end-last)
-		}
-		buf = append(buf, src[last:end]...)
+		w.Write(src[last:end])
 	}
 
-	nl := len(buf) == 0 || buf[len(buf)-1] != '\n'
+	nl := len(w.b) == 0 || w.b[len(w.b)-1] != '\n'
 
-	buf = append(buf, reset...)
+	w.Close()
 
 	if nl {
-		buf = append(buf, '\n')
+		w.b = append(w.b, '\n')
 	}
 
-	return buf
+	return w.b
 }
 
 func root(c *cli.Command) (string, string, error) {
