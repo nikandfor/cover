@@ -2,6 +2,7 @@
 [![CircleCI](https://circleci.com/gh/nikandfor/cover.svg?style=svg)](https://circleci.com/gh/nikandfor/cover)
 [![codecov](https://codecov.io/gh/nikandfor/cover/tags/latest/graph/badge.svg)](https://codecov.io/gh/nikandfor/cover)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nikandfor/cover)](https://goreportcard.com/report/github.com/nikandfor/cover)
+[![go-recipes](https://raw.githubusercontent.com/nikolaydubina/go-recipes/main/badge.svg?raw=true)](https://github.com/nikolaydubina/go-recipes)
 ![GitHub tag (latest SemVer)](https://img.shields.io/github/v/tag/nikandfor/cover?sort=semver)
 
 # cover
