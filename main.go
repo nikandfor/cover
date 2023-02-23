@@ -530,7 +530,7 @@ func render(c *cli.Command) (err error) {
 	}
 
 	if c.String("mode") != "silent" {
-		fmt.Fprintf(c, "%s", buf)
+		fmt.Fprintf(c.Stdout, "%s", buf)
 	}
 
 	if c.Bool("exit-code") && len(buf) != 0 {
