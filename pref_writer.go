@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 
-	"github.com/nikandfor/tlog"
-	"github.com/nikandfor/tlog/low"
+	"github.com/nikandfor/hacked/hfmt"
+	"tlog.app/go/tlog"
 )
 
 type PrefWriter struct {
@@ -29,7 +29,7 @@ func (w *PrefWriter) Write(p []byte) (n int, err error) {
 	}
 
 	if tlog.If("boundaries") {
-		w.b = low.AppendPrintf(w.b, "|%d:%d|", len(p), w.mode)
+		w.b = hfmt.Appendf(w.b, "|%d:%d|", len(p), w.mode)
 	}
 
 	for n < len(p) {

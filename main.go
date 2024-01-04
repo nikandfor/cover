@@ -13,15 +13,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/nikandfor/cli"
-	"github.com/nikandfor/errors"
 	"github.com/nikandfor/escape/color"
-	"github.com/nikandfor/tlog"
-	"github.com/nikandfor/tlog/ext/tlflag"
-	"github.com/nikandfor/tlog/low"
+	"github.com/nikandfor/hacked/hfmt"
+	"github.com/nikandfor/hacked/low"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/term"
 	"golang.org/x/tools/cover"
+	"nikand.dev/go/cli"
+	"tlog.app/go/errors"
+	"tlog.app/go/tlog"
+	"tlog.app/go/tlog/ext/tlflag"
 )
 
 var app *cli.Command
@@ -111,7 +112,7 @@ func before(c *cli.Command) error {
 
 	tlog.DefaultLogger = tlog.New(w)
 
-	tlog.SetFilter(c.String("verbosity"))
+	tlog.SetVerbosity(c.String("verbosity"))
 
 	return nil
 }
@@ -491,8 +492,8 @@ func render(c *cli.Command) (err error) {
 		}
 
 		if !c.Bool("no-file-comment") {
-			buf = low.AppendPrintf(buf, "// %v\n", p.FileName)
-			buf = low.AppendPrintf(buf, "// covered %v (%.1f%%) of %v statements\n", f.Covered, 100*f.Norm, f.Total)
+			buf = hfmt.Appendf(buf, "// %v\n", p.FileName)
+			buf = hfmt.Appendf(buf, "// covered %v (%.1f%%) of %v statements\n", f.Covered, 100*f.Norm, f.Total)
 		}
 
 		last := 0
@@ -515,8 +516,8 @@ func render(c *cli.Command) (err error) {
 			}
 
 			if !c.Bool("no-func-comment") {
-				buf = low.AppendPrintf(buf, "// %v\n", ff.Name)
-				buf = low.AppendPrintf(buf, "// covered %v (%.1f%%) of %v statements\n", ff.Covered, 100*ff.Norm, ff.Total)
+				buf = hfmt.Appendf(buf, "// %v\n", ff.Name)
+				buf = hfmt.Appendf(buf, "// covered %v (%.1f%%) of %v statements\n", ff.Covered, 100*ff.Norm, ff.Total)
 			}
 
 			buf = renderFile(buf, f.src, ff.Pos, ff.End, p)
@@ -661,6 +662,8 @@ func expr(e ast.Expr) string {
 		return expr(e.X)
 	case *ast.Ident:
 		return e.Name
+	case *ast.IndexExpr:
+		return expr(e.X)
 	default:
 		tlog.Printw("eval expr", "expr", e, "type", tlog.FormatNext("%T"), e)
 		panic(e)
