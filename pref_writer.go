@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 
-	"github.com/nikandfor/hacked/hfmt"
 	"tlog.app/go/tlog"
 )
 
@@ -29,7 +29,7 @@ func (w *PrefWriter) Write(p []byte) (n int, err error) {
 	}
 
 	if tlog.If("boundaries") {
-		w.b = hfmt.Appendf(w.b, "|%d:%d|", len(p), w.mode)
+		w.b = fmt.Appendf(w.b, "|%d:%d|", len(p), w.mode)
 	}
 
 	for n < len(p) {

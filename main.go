@@ -14,12 +14,11 @@ import (
 	"strings"
 
 	"github.com/nikandfor/escape/color"
-	"github.com/nikandfor/hacked/hfmt"
-	"github.com/nikandfor/hacked/low"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/term"
 	"golang.org/x/tools/cover"
 	"nikand.dev/go/cli"
+	"nikand.dev/go/hacked/low"
 	"tlog.app/go/errors"
 	"tlog.app/go/tlog"
 	"tlog.app/go/tlog/ext/tlflag"
@@ -492,8 +491,8 @@ func render(c *cli.Command) (err error) {
 		}
 
 		if !c.Bool("no-file-comment") {
-			buf = hfmt.Appendf(buf, "// %v\n", p.FileName)
-			buf = hfmt.Appendf(buf, "// covered %v (%.1f%%) of %v statements\n", f.Covered, 100*f.Norm, f.Total)
+			buf = fmt.Appendf(buf, "// %v\n", p.FileName)
+			buf = fmt.Appendf(buf, "// covered %v (%.1f%%) of %v statements\n", f.Covered, 100*f.Norm, f.Total)
 		}
 
 		last := 0
@@ -516,8 +515,8 @@ func render(c *cli.Command) (err error) {
 			}
 
 			if !c.Bool("no-func-comment") {
-				buf = hfmt.Appendf(buf, "// %v\n", ff.Name)
-				buf = hfmt.Appendf(buf, "// covered %v (%.1f%%) of %v statements\n", ff.Covered, 100*ff.Norm, ff.Total)
+				buf = fmt.Appendf(buf, "// %v\n", ff.Name)
+				buf = fmt.Appendf(buf, "// covered %v (%.1f%%) of %v statements\n", ff.Covered, 100*ff.Norm, ff.Total)
 			}
 
 			buf = renderFile(buf, f.src, ff.Pos, ff.End, p)
