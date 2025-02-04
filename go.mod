@@ -2,8 +2,6 @@ module nikand.dev/go/cover
 
 go 1.21
 
-toolchain go1.23.0
-
 require (
 	github.com/nikandfor/assert v0.0.0-20231112165957-bf2ce0a3555a
 	github.com/nikandfor/escape v0.0.0-20211015113450-0e8be7818ccf

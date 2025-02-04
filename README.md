@@ -1,4 +1,5 @@
 [![Documentation](https://pkg.go.dev/badge/github.com/nikandfor/cover)](https://pkg.go.dev/github.com/nikandfor/cover?tab=doc)
+[![Go workflow](https://github.com/nikandfor/cover/actions/workflows/go.yml/badge.svg)](https://github.com/nikandfor/cover/actions/workflows/go.yml)
 [![CircleCI](https://circleci.com/gh/nikandfor/cover.svg?style=svg)](https://circleci.com/gh/nikandfor/cover)
 [![codecov](https://codecov.io/gh/nikandfor/cover/tags/latest/graph/badge.svg)](https://codecov.io/gh/nikandfor/cover)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nikandfor/cover)](https://goreportcard.com/report/github.com/nikandfor/cover)
