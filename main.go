@@ -83,7 +83,7 @@ func main() {
 			cli.NewFlag("profile,coverprofile,p", "cover.out", "cover profile"),
 
 			//	cli.NewFlag("diff,d", "", "compare to profile"),
-			cli.NewFlag("mode", mode, "color|silent|none"),
+			cli.NewFlag("mode", mode, "color|prefix|silent"),
 			cli.NewFlag("exit-code", false, "set exit code to 1 if something selected"),
 
 			cli.NewFlag("funcs-only,func-only", false, "do not render non function declarations (vars, types, ...)"),
